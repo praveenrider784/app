@@ -1,0 +1,41 @@
+# Common
+node_modules/
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Backend specific
+backend/dist/
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/exam_debug.log
+backend/check_db.js
+backend/db_debug.js
+backend/db_debug_output.txt
+backend/db_debug_questions.js
+backend/questions_debug.txt
+
+# Frontend specific
+frontend/dist/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/tsconfig.node.tsbuildinfo
+frontend/vite.config.js.bak
+frontend/.env
+
+# IDE and Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
