@@ -32,9 +32,18 @@ export default function ExamInterface() {
                 setExamInfo(data.attempt);
                 setAttemptId(data.attempt.id);
 
-                // Use actual duration from backend
-                const duration = data.duration_minutes || 60;
-                setTimeLeft(duration * 60);
+                // Use actual duration but respect strict end_time constraint
+                const durationSeconds = (data.duration_minutes || 60) * 60;
+                let finalTimeLeft = durationSeconds;
+
+                if (data.end_time) {
+                    const endTime = new Date(data.end_time).getTime();
+                    const now = new Date().getTime();
+                    const remainingToDeadline = Math.floor((endTime - now) / 1000);
+                    finalTimeLeft = Math.max(0, Math.min(durationSeconds, remainingToDeadline));
+                }
+
+                setTimeLeft(finalTimeLeft);
 
                 setLoading(false);
             } catch (error: any) {

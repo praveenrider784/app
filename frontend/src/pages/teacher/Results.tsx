@@ -95,6 +95,7 @@ export default function DetailedResults() {
                                 <table className="w-full text-left">
                                     <thead className="bg-slate-50">
                                         <tr className="text-[10px] text-slate-400 uppercase tracking-widest">
+                                            <th className="px-8 py-5 font-black">Rank</th>
                                             <th className="px-8 py-5 font-black">Student</th>
                                             <th className="px-8 py-5 font-black">Submission Time</th>
                                             <th className="px-8 py-5 font-black">Correct</th>
@@ -103,10 +104,16 @@ export default function DetailedResults() {
                                         </tr>
                                     </thead>
                                     <tbody className="text-sm">
-                                        {attempts.map(attempt => {
+                                        {attempts.sort((a, b) => b.score - a.score).map((attempt, idx) => {
                                             const percentage = Math.round((attempt.score / attempt.total_questions) * 100);
                                             return (
                                                 <tr key={attempt.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50 transition-colors">
+                                                    <td className="px-8 py-5 font-black text-slate-900">
+                                                        {idx === 0 ? <span className="text-yellow-500 flex items-center gap-1"><Award size={14} /> 1st</span> :
+                                                            idx === 1 ? <span className="text-slate-400 flex items-center gap-1"><Award size={14} /> 2nd</span> :
+                                                                idx === 2 ? <span className="text-amber-600 flex items-center gap-1"><Award size={14} /> 3rd</span> :
+                                                                    <span className="text-slate-400 ml-5">{idx + 1}th</span>}
+                                                    </td>
                                                     <td className="px-8 py-5">
                                                         <div className="flex items-center gap-3">
                                                             <div className="w-8 h-8 bg-primary-100 text-primary-600 rounded-lg flex items-center justify-center font-black text-xs">

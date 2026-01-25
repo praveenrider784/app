@@ -37,11 +37,11 @@ export default function Login() {
         <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
             <div className="bg-white w-full max-w-md p-8 rounded-2xl shadow-xl border border-slate-100">
                 <div className="flex flex-col items-center mb-8">
-                    <div className="w-12 h-12 bg-primary-600 rounded-xl flex items-center justify-center mb-3 text-white">
-                        <School size={28} />
+                    <div className="w-16 h-16 bg-premium rounded-[24px] flex items-center justify-center mb-6 text-white shadow-2xl shadow-primary-200 animate-float">
+                        <School size={32} />
                     </div>
-                    <h1 className="text-2xl font-bold text-slate-900">School Exam PWA</h1>
-                    <p className="text-slate-500">Sign in to your account</p>
+                    <h1 className="text-3xl font-black text-slate-900 tracking-tight leading-none mb-2">School Portal</h1>
+                    <p className="text-slate-400 text-sm font-medium">Sign in to your dashboard</p>
                 </div>
 
                 {error && (
@@ -81,10 +81,10 @@ export default function Login() {
                     </button>
                 </form>
 
-                <div className="mt-6 text-center text-sm text-slate-500">
+                <div className="mt-8 text-center text-sm text-slate-500">
                     Don't have an account?{' '}
-                    <Link to="/signup" className="text-primary-600 font-medium hover:underline">
-                        Sign Up as Teacher signup
+                    <Link to="/signup" className="text-primary-600 font-black hover:underline transition-all">
+                        Sign Up
                     </Link>
                 </div>
             </div>

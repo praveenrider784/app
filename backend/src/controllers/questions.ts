@@ -153,6 +153,7 @@ export const uploadQuestions = async (req: AuthRequest, res: Response) => {
                 validatedQuestions.push({
                     school_id: schoolId,
                     subject_id: subjectId,
+                    subject_name: subjName,
                     text: parsed.text,
                     options: JSON.stringify(options),
                     correct_option_id: correctMap[parsed.correct_option],
@@ -194,6 +195,7 @@ export const uploadQuestions = async (req: AuthRequest, res: Response) => {
         res.json({
             message: `Imported ${validatedQuestions.length} questions.`,
             subject_id: validatedQuestions[0]?.subject_id,
+            subject_name: validatedQuestions[0]?.subject_name,
             unit: validatedQuestions[0]?.unit,
             errors: errors.length > 0 ? errors : undefined
         });

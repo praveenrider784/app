@@ -70,8 +70,8 @@ export default function CreateExam() {
             await api.post('/exams', {
                 title,
                 duration_minutes: duration,
-                start_time: startTime || null,
-                end_time: endTime || null,
+                start_time: startTime ? new Date(startTime).toISOString() : null,
+                end_time: endTime ? new Date(endTime).toISOString() : null,
                 config: { sections }
             });
             navigate('/teacher/dashboard');

@@ -60,10 +60,12 @@ export const getExams = async (req: AuthRequest, res: Response) => {
         const offset = (page - 1) * limit;
 
         const result = await pool.query(
-            `SELECT *, COUNT(*) OVER() as total_count 
-             FROM exams 
-             WHERE teacher_id = $1 
-             ORDER BY created_at DESC
+            `SELECT e.*, 
+                    (SELECT COUNT(*) FROM student_attempts sa WHERE sa.exam_id = e.id AND sa.status = 'completed') as attempt_count,
+                    COUNT(*) OVER() as total_count 
+             FROM exams e
+             WHERE e.teacher_id = $1 
+             ORDER BY e.created_at DESC
              LIMIT $2 OFFSET $3`,
             [teacherId, limit, offset]
         );
@@ -103,7 +105,7 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
         );
 
         const examsCount = await pool.query(
-            'SELECT COUNT(*) FROM exams WHERE school_id = $1',
+            'SELECT COUNT(*) FROM exams WHERE school_id = $1 AND is_active = true AND (end_time IS NULL OR end_time > NOW())',
             [schoolId]
         );
 
@@ -161,7 +163,7 @@ export const getExamAttempts = async (req: AuthRequest, res: Response) => {
              JOIN users u ON sa.student_id = u.id
              JOIN exams e ON sa.exam_id = e.id
              WHERE e.id = $1 AND e.school_id = $2 AND sa.status = 'completed'
-             ORDER BY sa.student_id, sa.score DESC`,
+             ORDER BY sa.student_id, sa.score DESC, u.full_name ASC`,
             [examId, schoolId]
         );
         res.json(result.rows);

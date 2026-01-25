@@ -81,6 +81,15 @@ export const startExam = async (req: AuthRequest, res: Response) => {
         const duration = exam.duration_minutes || 60;
         if (!exam.is_active) return res.status(403).json({ error: 'Exam is not active' });
 
+        // Strict Timing Check
+        const now = new Date();
+        if (exam.start_time && new Date(exam.start_time) > now) {
+            return res.status(403).json({ error: `This exam has not started yet. It is scheduled for ${new Date(exam.start_time).toLocaleString()}.` });
+        }
+        if (exam.end_time && new Date(exam.end_time) < now) {
+            return res.status(403).json({ error: 'This exam has already ended and is no longer available for new attempts.' });
+        }
+
         // 3. Generate Question Set based on Config
         const config = typeof exam.config === 'string' ? JSON.parse(exam.config) : exam.config;
         let selectedQuestionIds: string[] = [];
@@ -162,6 +171,7 @@ export const startExam = async (req: AuthRequest, res: Response) => {
         res.json({
             attempt: newAttempt,
             duration_minutes: duration,
+            end_time: exam.end_time,
             questions: questionsResult.rows.map(q => ({
                 ...q,
                 options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
@@ -251,8 +261,7 @@ export const getAvailableExams = async (req: AuthRequest, res: Response) => {
         const result = await pool.query(
             `SELECT e.*, sa.status as attempt_status, sa.score, sa.total_questions, 
                     (SELECT COUNT(*) FROM exams WHERE school_id = $2 AND is_active = true 
-                     AND (start_time IS NULL OR start_time <= NOW()) 
-                     AND (end_time IS NULL OR end_time >= NOW())) as total_count
+                     AND (end_time IS NULL OR end_time >= NOW() OR id IN (SELECT exam_id FROM student_attempts WHERE student_id = $1))) as total_count
              FROM exams e
              LEFT JOIN (
                 SELECT DISTINCT ON (exam_id) * 
@@ -261,8 +270,7 @@ export const getAvailableExams = async (req: AuthRequest, res: Response) => {
                 ORDER BY exam_id, (status = 'completed') DESC, id DESC
              ) sa ON e.id = sa.exam_id
              WHERE e.school_id = $2 AND e.is_active = true
-             AND (e.start_time IS NULL OR e.start_time <= NOW())
-             AND (e.end_time IS NULL OR e.end_time >= NOW())
+             AND (e.end_time IS NULL OR e.end_time >= NOW() OR sa.id IS NOT NULL)
              ORDER BY e.created_at DESC
              LIMIT $3 OFFSET $4`,
             [studentId, schoolId, limit, offset]

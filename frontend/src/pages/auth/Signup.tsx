@@ -54,11 +54,11 @@ export default function Signup() {
         <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
             <div className="bg-white w-full max-w-md p-8 rounded-2xl shadow-xl border border-slate-100">
                 <div className="flex flex-col items-center mb-8">
-                    <div className="w-12 h-12 bg-primary-600 rounded-xl flex items-center justify-center mb-3 text-white">
-                        <School size={28} />
+                    <div className="w-16 h-16 bg-premium rounded-[24px] flex items-center justify-center mb-6 text-white shadow-2xl shadow-primary-200 animate-float">
+                        <School size={32} />
                     </div>
-                    <h1 className="text-2xl font-bold text-slate-900 text-center">Join School Portal</h1>
-                    <p className="text-slate-500 text-sm text-center">Create your account to get started</p>
+                    <h1 className="text-3xl font-black text-slate-900 text-center tracking-tight leading-none mb-2">School Management</h1>
+                    <p className="text-slate-400 text-sm text-center font-medium">Create your secure account to get started</p>
                 </div>
 
                 {/* Role Switcher */}
@@ -159,9 +159,14 @@ export default function Signup() {
                     <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-primary-600 hover:bg-primary-700 text-white font-bold py-3 rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-primary-200"
+                        className="w-full bg-premium hover:opacity-90 text-white font-black py-4 rounded-2xl transition-all flex items-center justify-center gap-2 shadow-xl shadow-primary-200 active:scale-[0.98] group"
                     >
-                        {loading ? <Loader2 className="animate-spin" size={20} /> : 'Complete Sign Up'}
+                        {loading ? <Loader2 className="animate-spin" size={20} /> : (
+                            <>
+                                <span>Complete Sign Up</span>
+                                <GraduationCap size={20} className="group-hover:translate-x-1 transition-transform" />
+                            </>
+                        )}
                     </button>
                 </form>
 

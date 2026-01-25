@@ -9,6 +9,10 @@ export default function UploadQuestions() {
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState<{ type: 'success' | 'error', message: string, details?: any[] } | null>(null);
     const [lastUploadedData, setLastUploadedData] = useState<{ subject_id: string, unit: string } | null>(null);
+    const [quickTitle, setQuickTitle] = useState('');
+    const [quickDuration, setQuickDuration] = useState(60);
+    const [quickStartTime, setQuickStartTime] = useState('');
+    const [quickEndTime, setQuickEndTime] = useState('');
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
@@ -43,6 +47,7 @@ export default function UploadQuestions() {
                     subject_id: data.subject_id,
                     unit: data.unit || ''
                 });
+                setQuickTitle(''); // Explicitly leave blank as requested
             }
 
             setFile(null);
@@ -53,6 +58,45 @@ export default function UploadQuestions() {
                 message: error.response?.data?.error || 'Upload failed',
                 details: error.response?.data?.details
             });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleQuickCreate = async () => {
+        if (!lastUploadedData || !quickTitle) {
+            alert("Please enter an exam title.");
+            return;
+        }
+
+        // Basic validation
+        if (quickStartTime && quickEndTime && new Date(quickStartTime) >= new Date(quickEndTime)) {
+            alert("End time must be after start time.");
+            return;
+        }
+
+        setLoading(true);
+        try {
+            await api.post('/exams', {
+                title: quickTitle,
+                duration_minutes: quickDuration,
+                start_time: quickStartTime ? new Date(quickStartTime).toISOString() : null,
+                end_time: quickEndTime ? new Date(quickEndTime).toISOString() : null,
+                config: {
+                    sections: [{
+                        filter: {
+                            subject_id: lastUploadedData.subject_id,
+                            unit: lastUploadedData.unit,
+                            difficulty: 'any'
+                        },
+                        count: 10 // Default to 10 for quick create, teacher can change in full form if needed
+                    }]
+                }
+            });
+            navigate('/teacher/dashboard');
+        } catch (error) {
+            console.error("Failed to create quick exam");
+            alert("Failed to create exam. You might need to use the full form for complex rules.");
         } finally {
             setLoading(false);
         }
@@ -72,47 +116,124 @@ export default function UploadQuestions() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Upload Card */}
-                <div className="lg:col-span-2 bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
-                    <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors relative">
-                        <input
-                            key={status ? 'reset' : 'active'}
-                            type="file"
-                            accept=".xlsx, .xls, .csv"
-                            onChange={handleFileChange}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                        />
-                        <Upload size={48} className="text-slate-300 mb-4" />
-                        {file ? (
-                            <div>
-                                <p className="text-slate-900 font-medium">{file.name}</p>
-                                <p className="text-xs text-slate-500 mt-1">{(file.size / 1024).toFixed(1)} KB</p>
-                            </div>
-                        ) : (
-                            <div>
-                                <p className="text-slate-900 font-medium">Click or drag file to upload</p>
-                                <p className="text-sm text-slate-500 mt-1">Supports .xlsx, .xls (Max 5MB)</p>
-                            </div>
-                        )}
+                <div className="lg:col-span-2 space-y-6">
+                    <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+                        <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 flex flex-col items-center justify-center text-center hover:bg-slate-50 transition-colors relative">
+                            <input
+                                key={status ? 'reset' : 'active'}
+                                type="file"
+                                accept=".xlsx, .xls, .csv"
+                                onChange={handleFileChange}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            />
+                            <Upload size={48} className="text-slate-300 mb-4" />
+                            {file ? (
+                                <div>
+                                    <p className="text-slate-900 font-medium">{file.name}</p>
+                                    <p className="text-xs text-slate-500 mt-1">{(file.size / 1024).toFixed(1)} KB</p>
+                                </div>
+                            ) : (
+                                <div>
+                                    <p className="text-slate-900 font-medium">Click or drag file to upload</p>
+                                    <p className="text-sm text-slate-500 mt-1">Supports .xlsx, .xls (Max 5MB)</p>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="mt-6 flex justify-end space-x-3">
+                            {(file || status) && (
+                                <button
+                                    onClick={() => { setFile(null); setStatus(null); setLastUploadedData(null); }}
+                                    className="px-6 py-2.5 rounded-lg font-medium text-slate-600 hover:bg-slate-100 transition"
+                                >
+                                    Reset
+                                </button>
+                            )}
+                            <button
+                                onClick={handleUpload}
+                                disabled={!file || loading}
+                                className="bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg font-medium flex items-center space-x-2 transition"
+                            >
+                                {loading ? <Loader2 className="animate-spin" size={20} /> : <Upload size={20} />}
+                                <span>Upload Now</span>
+                            </button>
+                        </div>
                     </div>
 
-                    <div className="mt-6 flex justify-end space-x-3">
-                        {(file || status) && (
-                            <button
-                                onClick={() => { setFile(null); setStatus(null); }}
-                                className="px-6 py-2.5 rounded-lg font-medium text-slate-600 hover:bg-slate-100 transition"
-                            >
-                                Reset
-                            </button>
-                        )}
-                        <button
-                            onClick={handleUpload}
-                            disabled={!file || loading}
-                            className="bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-lg font-medium flex items-center space-x-2 transition"
-                        >
-                            {loading ? <Loader2 className="animate-spin" size={20} /> : <Upload size={20} />}
-                            <span>Upload Now</span>
-                        </button>
-                    </div>
+                    {/* Integrated "Create Test" Option - Inline Form */}
+                    {status?.type === 'success' && lastUploadedData && (
+                        <div className="bg-slate-900 text-white p-8 rounded-2xl shadow-xl shadow-slate-200 animate-in zoom-in-95 duration-300 border border-slate-800">
+                            <div className="space-y-6">
+                                <div>
+                                    <h3 className="text-xl font-black mb-1 flex items-center gap-2">
+                                        <CheckCircle className="text-green-400" size={24} />
+                                        Questions Imported Successfully!
+                                    </h3>
+                                    <p className="text-slate-400 text-sm">
+                                        Quickly schedule a test using these questions below.
+                                    </p>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2 col-span-full">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Exam Title</label>
+                                        <input
+                                            type="text"
+                                            required
+                                            value={quickTitle}
+                                            onChange={(e) => setQuickTitle(e.target.value)}
+                                            className="w-full bg-slate-800 border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-primary-500 transition"
+                                            placeholder="e.g. Mathematics Mid-Term"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Duration (Mins)</label>
+                                        <input
+                                            type="number"
+                                            value={quickDuration}
+                                            onChange={(e) => setQuickDuration(parseInt(e.target.value))}
+                                            className="w-full bg-slate-800 border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-primary-500 transition"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Start Time (Optional)</label>
+                                        <input
+                                            type="datetime-local"
+                                            value={quickStartTime}
+                                            onChange={(e) => setQuickStartTime(e.target.value)}
+                                            className="w-full bg-slate-800 border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-primary-500 transition"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">End Time (Optional)</label>
+                                        <input
+                                            type="datetime-local"
+                                            value={quickEndTime}
+                                            onChange={(e) => setQuickEndTime(e.target.value)}
+                                            className="w-full bg-slate-800 border-slate-700 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-primary-500 transition"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col sm:flex-row gap-3">
+                                    <button
+                                        onClick={handleQuickCreate}
+                                        disabled={loading}
+                                        className="flex-1 bg-white text-slate-900 hover:bg-green-500 hover:text-white px-8 py-4 rounded-xl font-black flex items-center justify-center space-x-2 transition-all shadow-lg active:scale-95 group"
+                                    >
+                                        {loading ? <Loader2 className="animate-spin" size={20} /> : <CheckCircle size={20} className="group-hover:scale-110 transition-transform" />}
+                                        <span>Conduct Exam Now</span>
+                                    </button>
+                                    <button
+                                        onClick={() => navigate('/teacher/create-exam', { state: lastUploadedData })}
+                                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-6 py-4 rounded-xl font-bold text-sm transition"
+                                    >
+                                        Custom Rules...
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Template Instructions */}
@@ -143,20 +264,7 @@ export default function UploadQuestions() {
                                 <div className="flex-1">
                                     <p className="font-black text-lg leading-tight uppercase tracking-tight">{status.message}</p>
 
-                                    {status.type === 'success' && lastUploadedData && (
-                                        <div className="mt-6">
-                                            <p className="text-sm text-green-700 mb-4 font-medium italic">Your questions are ready! Want to schedule an exam right now using this data?</p>
-                                            <button
-                                                onClick={() => navigate('/teacher/create-exam', { state: lastUploadedData })}
-                                                className="bg-slate-900 hover:bg-black text-white px-6 py-3 rounded-2xl font-black flex items-center space-x-2 transition shadow-xl active:scale-95"
-                                            >
-                                                <span>Conduct Exam Now</span>
-                                                <ChevronRight size={18} />
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    {status.details && status.details.length > 0 && (
+                                    {status.type === 'success' && status.details && status.details.length > 0 && (
                                         <div className="mt-4 bg-white/60 p-4 rounded-2xl text-xs space-y-2 border border-green-200/50">
                                             <p className="font-bold text-green-900 border-b border-green-100 pb-2 mb-2 uppercase tracking-widest text-[10px]">Import Summary</p>
                                             {status.details.map((d: any, i: number) => (
