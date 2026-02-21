@@ -24,57 +24,75 @@ export default function TeacherDashboard() {
     const [loading, setLoading] = useState(true);
     const EXAM_LIMIT = 5;
 
-    useEffect(() => {
-        const fetchStats = async () => {
-            try {
-                const { data } = await api.get('/exams/stats');
-                setStats(data);
-            } catch (e) {
-                console.error("Stats fetch failed");
-            }
-        };
-        fetchStats();
-    }, []);
+    const fetchStats = async () => {
+        try {
+            const { data } = await api.get('/exams/stats');
+            setStats(data);
+        } catch (e) {
+            console.error("Stats fetch failed");
+        }
+    };
 
-    useEffect(() => {
-        const fetchPaginatedExams = async () => {
-            setLoading(true);
-            try {
-                const { data } = await api.get(`/exams?page=${page}&limit=${EXAM_LIMIT}`);
-                setExams(data.exams);
-                setPagination(data.pagination);
-            } catch (error) {
-                console.error("Failed to fetch exams");
-            } finally {
-                setLoading(false);
-            }
-        };
-        if (activeTab === 'exams') fetchPaginatedExams();
-    }, [page, activeTab]);
+    const fetchPaginatedExams = async (silent = false) => {
+        if (!silent) setLoading(true);
+        try {
+            const { data } = await api.get(`/exams?page=${page}&limit=${EXAM_LIMIT}`);
+            setExams(data.exams);
+            setPagination(data.pagination);
+        } catch (error) {
+            console.error("Failed to fetch exams");
+        } finally {
+            if (!silent) setLoading(false);
+        }
+    };
 
-    const fetchStudents = async () => {
-        setLoading(true);
+    const fetchStudents = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const { data } = await api.get('/auth/students');
             setStudents(data);
         } catch (error) {
             console.error("Failed to fetch students");
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     };
 
-    const fetchQuestions = async () => {
-        setLoading(true);
+    const fetchQuestions = async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const { data } = await api.get('/questions');
             setQuestions(data);
         } catch (error) {
             console.error("Failed to fetch questions");
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     };
+
+    const fetchExamResults = async (silent = false) => {
+        if (!inspectedExam) return;
+        if (!silent) setLoading(true);
+        try {
+            const { data } = await api.get(`/exams/${inspectedExam.id}/attempts`);
+            setSelectedExamResults(data.sort((a: any, b: any) => {
+                if (b.score !== a.score) return b.score - a.score;
+                return a.full_name.localeCompare(b.full_name);
+            }));
+        } catch (e) {
+            console.error("Failed to fetch exam results");
+        } finally {
+            if (!silent) setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchStats();
+    }, []);
+
+    useEffect(() => {
+        if (activeTab === 'exams') fetchPaginatedExams();
+    }, [page, activeTab]);
 
     const handleInspectExam = async (exam: any) => {
         setLoading(true);
@@ -97,7 +115,19 @@ export default function TeacherDashboard() {
     useEffect(() => {
         if (activeTab === 'students') fetchStudents();
         if (activeTab === 'questions') fetchQuestions();
-    }, [activeTab]);
+        if (activeTab === 'exam_results') fetchExamResults();
+    }, [activeTab, inspectedExam]);
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            fetchStats();
+            if (activeTab === 'exams') fetchPaginatedExams(true);
+            if (activeTab === 'students') fetchStudents(true);
+            if (activeTab === 'questions') fetchQuestions(true);
+            if (activeTab === 'exam_results') fetchExamResults(true);
+        }, 30000);
+        return () => clearInterval(interval);
+    }, [activeTab, page, inspectedExam]);
 
     const openShare = (exam: any) => setSelectedExamForShare(exam);
     const closeShare = () => setSelectedExamForShare(null);

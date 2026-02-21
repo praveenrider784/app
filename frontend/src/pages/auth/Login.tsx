@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useNavigate, Link } from 'react-router-dom';
 import api from '../../services/api';
@@ -11,6 +11,13 @@ export default function Login() {
     const [loading, setLoading] = useState(false);
     const { login } = useAuth();
     const navigate = useNavigate();
+
+    const handleInstallClick = () => {
+        if (window.__pwa_deferred_prompt) {
+            window.__show_pwa_install_prompt?.();
+            return;
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -81,7 +88,8 @@ export default function Login() {
                     </button>
                 </form>
 
-                <div className="mt-8 text-center text-sm text-slate-500">
+
+                <div className="mt-6 text-center text-sm text-slate-500">
                     Don't have an account?{' '}
                     <Link to="/signup" className="text-primary-600 font-black hover:underline transition-all">
                         Sign Up

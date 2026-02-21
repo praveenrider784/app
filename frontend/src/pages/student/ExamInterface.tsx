@@ -14,6 +14,8 @@ export default function ExamInterface() {
     const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
     const [answers, setAnswers] = useState<Record<string, number>>({});
     const [timeLeft, setTimeLeft] = useState(0);
+    const [initialTimeLeft, setInitialTimeLeft] = useState(0);
+    const [examEndsAt, setExamEndsAt] = useState<number | null>(null);
     const [attemptId, setAttemptId] = useState<string | null>(null);
     const [isFinished, setIsFinished] = useState(false);
     const [finalScore, setFinalScore] = useState<number | null>(null);
@@ -44,6 +46,7 @@ export default function ExamInterface() {
                 }
 
                 setTimeLeft(finalTimeLeft);
+                setInitialTimeLeft(finalTimeLeft);
 
                 setLoading(false);
             } catch (error: any) {
@@ -57,12 +60,13 @@ export default function ExamInterface() {
 
     // Timer logic
     useEffect(() => {
-        if (!hasStarted || timeLeft <= 0 || isFinished) return;
+        if (!hasStarted || isFinished || !examEndsAt) return;
         const timer = setInterval(() => {
-            setTimeLeft(prev => prev - 1);
+            const remainingSeconds = Math.max(0, Math.ceil((examEndsAt - Date.now()) / 1000));
+            setTimeLeft(remainingSeconds);
         }, 1000);
         return () => clearInterval(timer);
-    }, [hasStarted, timeLeft, isFinished]);
+    }, [hasStarted, isFinished, examEndsAt]);
 
     // Auto-submit when timer hits zero
     useEffect(() => {
@@ -76,6 +80,9 @@ export default function ExamInterface() {
         if (elem.requestFullscreen) {
             elem.requestFullscreen().catch((err) => console.log("Fullscreen blocked", err));
         }
+        const endsAt = Date.now() + initialTimeLeft * 1000;
+        setExamEndsAt(endsAt);
+        setTimeLeft(initialTimeLeft);
         setHasStarted(true);
     };
 

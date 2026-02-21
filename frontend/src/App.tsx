@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import PwaInstallPrompt from './components/common/PwaInstallPrompt';
 import Login from './pages/auth/Login';
 import Signup from './pages/auth/Signup';
 import PaymentPending from './pages/auth/PaymentPending';
@@ -23,6 +24,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <PwaInstallPrompt />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />

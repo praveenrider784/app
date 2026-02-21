@@ -256,38 +256,63 @@ export const getAvailableExams = async (req: AuthRequest, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     const offset = (page - 1) * limit;
+    const scope = (req.query.scope as string) || 'all';
 
     try {
-        const result = await pool.query(
-            `SELECT e.*, sa.status as attempt_status, sa.score, sa.total_questions, 
-                    (SELECT COUNT(*) FROM exams WHERE school_id = $2 AND is_active = true 
-                     AND (end_time IS NULL OR end_time >= NOW() OR id IN (SELECT exam_id FROM student_attempts WHERE student_id = $1))) as total_count
-             FROM exams e
-             LEFT JOIN (
+        const expiredCondition = `(e.end_time IS NOT NULL AND e.end_time < NOW()) OR (e.end_time IS NULL AND e.start_time IS NOT NULL AND e.duration_minutes IS NOT NULL AND (e.start_time + (e.duration_minutes || ' minutes')::interval) < NOW())`;
+        let scopeCondition = '';
+        if (scope === 'active') {
+            scopeCondition = `AND e.is_active = true AND NOT (${expiredCondition}) AND (sa.status IS NULL OR sa.status <> 'completed')`;
+        } else if (scope === 'history') {
+            scopeCondition = `AND (sa.status = 'completed' OR (${expiredCondition}) OR e.is_active = false)`;
+        }
+
+        const baseJoin = `
+            FROM exams e
+            LEFT JOIN (
                 SELECT DISTINCT ON (exam_id) * 
                 FROM student_attempts 
                 WHERE student_id = $1 
                 ORDER BY exam_id, (status = 'completed') DESC, id DESC
-             ) sa ON e.id = sa.exam_id
-             WHERE e.school_id = $2 AND e.is_active = true
-             AND (e.end_time IS NULL OR e.end_time >= NOW() OR sa.id IS NOT NULL)
-             ORDER BY e.created_at DESC
+            ) sa ON e.id = sa.exam_id
+            WHERE e.school_id = $2
+            ${scopeCondition}
+        `;
+
+        const result = await pool.query(
+            `SELECT e.*, sa.status as attempt_status, sa.score, sa.total_questions,
+                    CASE 
+                        WHEN e.end_time IS NOT NULL AND e.end_time < NOW() THEN true
+                        WHEN e.end_time IS NULL AND e.start_time IS NOT NULL AND e.duration_minutes IS NOT NULL
+                             AND (e.start_time + (e.duration_minutes || ' minutes')::interval) < NOW() THEN true
+                        ELSE false 
+                    END as is_expired,
+                    CASE WHEN e.start_time IS NOT NULL AND e.start_time > NOW() THEN true ELSE false END as is_upcoming
+             ${baseJoin}
+             ORDER BY e.created_at DESC, e.id DESC
              LIMIT $3 OFFSET $4`,
             [studentId, schoolId, limit, offset]
         );
 
-        const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count) : 0;
+        const totalCountResult = await pool.query(
+            `SELECT COUNT(*) ${baseJoin}`,
+            [studentId, schoolId]
+        );
+        const totalCount = totalCountResult.rows.length > 0 ? parseInt(totalCountResult.rows[0].count) : 0;
 
         res.json({
-            exams: result.rows.map(r => {
-                const { total_count, ...exam } = r;
-                return exam;
-            }),
+            exams: result.rows,
             pagination: {
                 total: totalCount,
                 page,
                 limit,
                 pages: Math.ceil(totalCount / limit)
+            },
+            meta: {
+                returned: result.rows.length,
+                offset,
+                server_now: new Date().toISOString(),
+                scope
             }
         });
     } catch (error: any) {

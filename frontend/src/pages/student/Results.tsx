@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../../services/api';
-import { Loader2, CheckCircle2 } from 'lucide-react';
+import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import Pagination from '../../components/common/Pagination';
 
@@ -16,8 +16,7 @@ export default function StudentResults() {
             setLoading(true);
             try {
                 const { data } = await api.get(`/student/exams?page=${page}&limit=${LIMIT}`);
-                // Filter only completed exams (Backend returns all, we filter completed)
-                setResults(data.exams.filter((e: any) => e.attempt_status === 'completed'));
+                setResults(data.exams);
                 setPagination(data.pagination);
             } catch (error) {
                 console.error("Failed to fetch results");
@@ -47,12 +46,17 @@ export default function StudentResults() {
                             <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Test Name</th>
                             <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Date</th>
                             <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Score / Max</th>
-                            <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Percent</th>
+                            <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Status / Percent</th>
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50">
                         {results.map((res) => {
-                            const percentage = res.total_questions > 0 ? Math.round((res.score / res.total_questions) * 100) : 0;
+                            const percentage = res.total_questions > 0 ? Math.round((res.score / res.total_questions) * 100) : null;
+                            const endTime = res.end_time ? new Date(res.end_time) : null;
+                            const isExpired = typeof res.is_expired === 'boolean' ? res.is_expired : Boolean(endTime && endTime < new Date());
+                            const status = res.attempt_status === 'completed'
+                                ? { label: 'Completed', className: 'bg-green-50 text-green-600' }
+                                : { label: 'Not Attempted', className: 'bg-slate-100 text-slate-600' };
 
                             return (
                                 <tr key={res.id} className="hover:bg-slate-50 transition-colors">
@@ -68,18 +72,32 @@ export default function StudentResults() {
                                         {new Date(res.created_at).toLocaleDateString()}
                                     </td>
                                     <td className="px-6 py-5">
-                                        <div className="flex items-baseline gap-1 font-black">
-                                            <span className="text-xl text-slate-900">{res.score}</span>
-                                            <span className="text-sm text-slate-500">/ {res.total_questions}</span>
-                                        </div>
+                                        {res.attempt_status === 'completed' ? (
+                                            <div className="flex items-baseline gap-1 font-black">
+                                                <span className="text-xl text-slate-900">{res.score}</span>
+                                                <span className="text-sm text-slate-500">/ {res.total_questions}</span>
+                                            </div>
+                                        ) : (
+                                            <span className="text-sm font-bold text-slate-400">--</span>
+                                        )}
                                     </td>
                                     <td className="px-6 py-5 text-right">
-                                        <span className={cn(
-                                            "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-tighter",
-                                            percentage >= 50 ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600"
-                                        )}>
-                                            {percentage}%
-                                        </span>
+                                        <div className="flex items-center justify-end gap-2">
+                                            <span className={cn(
+                                                "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-tighter",
+                                                status.className
+                                            )}>
+                                                {status.label}
+                                            </span>
+                                            {res.attempt_status === 'completed' && percentage !== null && (
+                                                <span className={cn(
+                                                    "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-tighter",
+                                                    percentage >= 50 ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600"
+                                                )}>
+                                                    {percentage}%
+                                                </span>
+                                            )}
+                                        </div>
                                     </td>
                                 </tr>
                             );
@@ -88,7 +106,7 @@ export default function StudentResults() {
                         {results.length === 0 && (
                             <tr>
                                 <td colSpan={4} className="px-6 py-20 text-center text-slate-400">
-                                    <CheckCircle2 size={40} className="mx-auto mb-2 opacity-20" />
+                                    <AlertCircle size={40} className="mx-auto mb-2 opacity-20" />
                                     <p className="text-sm font-medium">No results found.</p>
                                 </td>
                             </tr>
