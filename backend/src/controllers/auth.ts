@@ -22,7 +22,6 @@ const RegisterSchema = z.object({
 export const login = async (req: Request, res: Response) => {
     try {
         const { email, password } = LoginSchema.parse(req.body);
-        console.log(`\n[AUTH] Login attempt: ${email}`);
 
         const result = await pool.query(
             'SELECT * FROM users WHERE email = $1',
@@ -31,16 +30,9 @@ export const login = async (req: Request, res: Response) => {
 
         const user = result.rows[0];
 
-        if (!user) {
-            console.log(`[AUTH] User not found: ${email}`);
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
+        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-        console.log(`[AUTH] User: ${user.email}, Role: ${user.role}`);
-        console.log(`[AUTH] Password Length: ${password.length}`);
-
-        const isValid = bcrypt.compareSync(password, user.password_hash);
-        console.log(`[AUTH] Password Valid: ${isValid}`);
+        const isValid = await bcrypt.compare(password, user.password_hash);
 
         if (!isValid) {
             return res.status(401).json({ error: 'Invalid credentials' });
@@ -79,7 +71,7 @@ export const register = async (req: Request, res: Response) => {
             if (!finalSchoolId) throw new Error("School selection is required for students");
         }
 
-        const passwordHash = bcrypt.hashSync(password, 10);
+        const passwordHash = await bcrypt.hash(password, 10);
 
         const userRes = await client.query(
             `INSERT INTO users (school_id, email, password_hash, full_name, role)
@@ -99,6 +91,9 @@ export const register = async (req: Request, res: Response) => {
         res.json({ token, user: { id: user.id, name: user.full_name, role: user.role } });
     } catch (error: any) {
         await client.query('ROLLBACK');
+        if (error?.code === '23505') {
+            return res.status(409).json({ error: 'Email already registered' });
+        }
         console.error('[AUTH] Register Error:', error);
         res.status(400).json({ error: error.message || 'Registration failed' });
     } finally {

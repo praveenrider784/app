@@ -94,3 +94,12 @@ CREATE TABLE IF NOT EXISTS responses (
 CREATE INDEX IF NOT EXISTS idx_questions_tags ON questions USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_questions_unit ON questions(unit);
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_questions_school_subject_diff_unit ON questions(school_id, subject_id, difficulty, unit);
+CREATE INDEX IF NOT EXISTS idx_questions_school_id ON questions(school_id);
+CREATE INDEX IF NOT EXISTS idx_exams_school_created ON exams(school_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_exams_teacher_created ON exams(teacher_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_student_attempts_student_exam_time ON student_attempts(student_id, exam_id, start_time DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_student_attempts_exam_student_time ON student_attempts(exam_id, student_id, start_time DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_student_attempts_exam_status ON student_attempts(exam_id, status);
+CREATE INDEX IF NOT EXISTS idx_responses_attempt_id ON responses(attempt_id);
+CREATE INDEX IF NOT EXISTS idx_responses_attempt_question ON responses(attempt_id, question_id);

@@ -9,6 +9,8 @@ const CreateExamSchema = z.object({
     start_time: z.string().optional().nullish(),
     end_time: z.string().optional().nullish(),
     config: z.object({
+        random_subset_count: z.number().int().min(1).optional(),
+        specific_question_ids: z.array(z.string().uuid()).optional(),
         sections: z.array(z.object({
             filter: z.object({
                 subject_id: z.coerce.string().optional().nullish(),
@@ -155,18 +157,55 @@ export const getExamFormData = async (req: AuthRequest, res: Response) => {
 export const getExamAttempts = async (req: AuthRequest, res: Response) => {
     const { examId } = req.params;
     const schoolId = req.user?.schoolId;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = (page - 1) * limit;
 
     try {
         const result = await pool.query(
-            `SELECT DISTINCT ON (sa.student_id) sa.*, u.full_name, u.email 
-             FROM student_attempts sa
-             JOIN users u ON sa.student_id = u.id
-             JOIN exams e ON sa.exam_id = e.id
-             WHERE e.id = $1 AND e.school_id = $2 AND sa.status = 'completed'
-             ORDER BY sa.student_id, sa.score DESC, u.full_name ASC`,
-            [examId, schoolId]
+            `SELECT 
+                u.id as student_id,
+                u.full_name,
+                u.email,
+                sa.id as attempt_id,
+                sa.status,
+                sa.score,
+                sa.total_questions,
+                sa.start_time,
+                sa.end_time,
+                COUNT(*) OVER() as total_count
+             FROM users u
+             LEFT JOIN (
+                SELECT DISTINCT ON (student_id) *
+                FROM student_attempts
+                WHERE exam_id = $1
+                ORDER BY student_id,
+                    COALESCE(end_time, start_time) DESC,
+                    id DESC
+             ) sa ON u.id = sa.student_id
+             WHERE u.school_id = $2 AND u.role = 'student'
+             ORDER BY
+                CASE WHEN sa.status = 'completed' THEN 0 ELSE 1 END ASC,
+                sa.score DESC NULLS LAST,
+                u.full_name ASC
+             LIMIT $3 OFFSET $4`,
+            [examId, schoolId, limit, offset]
         );
-        res.json(result.rows);
+
+        const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count) : 0;
+
+        res.json({
+            results: result.rows.map(r => {
+                const { total_count, ...data } = r;
+                return data;
+            }),
+            pagination: {
+                total: totalCount,
+                page,
+                limit,
+                pages: Math.ceil(totalCount / limit)
+            }
+        });
     } catch (error: any) {
         console.error('Get Exam Attempts Error:', error);
         res.status(500).json({ error: error.message });

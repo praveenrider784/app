@@ -2,8 +2,13 @@ import { Request, Response } from 'express';
 import { pool } from '../config/db';
 import * as XLSX from 'xlsx';
 import fs from 'fs';
+import path from 'path';
 import { AuthRequest } from '../middleware/auth';
+
+const LOG_FILE = path.join(process.cwd(), 'exam_debug.log');
+const log = (msg: string) => fs.appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`);
 import { z } from 'zod';
+import { parseWordDocument } from '../utils/wordParser';
 
 // More flexible schema with coercion - enums are still strict but we normalize data before parsing
 const QuestionRowSchema = z.object({
@@ -69,71 +74,61 @@ export const uploadQuestions = async (req: AuthRequest, res: Response) => {
     }
 
     const schoolId = req.user?.schoolId;
+    log(`[CONTROLLER] Received upload request. SchoolId: ${schoolId}, File: ${file?.originalname}, Path: ${file?.path}, Size: ${file?.size}`);
 
     try {
-        const workbook = XLSX.readFile(file.path);
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        const rawData: any[] = XLSX.utils.sheet_to_json(sheet);
+        if (!file?.originalname.endsWith('.docx')) {
+            log(`[CONTROLLER] Rejected: Not a .docx file`);
+            if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+            return res.status(400).json({ error: 'Invalid file format. Please upload a .docx Word document.' });
+        }
+
+        log(`[CONTROLLER] Calling parseWordDocument for ${file.path}`);
+        const rawData = await parseWordDocument(file.path);
+        log(`[CONTROLLER] parseWordDocument returned ${rawData.length} rows`);
 
         const validatedQuestions = [];
         const errors = [];
 
         for (const [index, row] of rawData.entries()) {
-            const normalizedRow: any = {};
-
-            Object.keys(row).forEach(key => {
-                const mappedKey = findMappedKey(key);
-                normalizedRow[mappedKey] = row[key];
-            });
-
             try {
                 // 1. Lenient Correct Option (Find A-D or 1-4)
-                if (normalizedRow.correct_option !== undefined && normalizedRow.correct_option !== null) {
-                    let val = String(normalizedRow.correct_option).trim().toUpperCase();
+                let correct_option = 'A'; // Default fallback
+                if (row.correct_option) {
+                    let val = String(row.correct_option).trim().toUpperCase();
                     // Map 1->A, 2->B, etc. if it's a single digit
                     if (/^[1-4]$/.test(val)) {
                         const map: Record<string, string> = { '1': 'A', '2': 'B', '3': 'C', '4': 'D' };
                         val = map[val];
                     }
                     const match = val.match(/[A-D]/);
-                    normalizedRow.correct_option = match ? match[0] : val;
+                    correct_option = match ? match[0] : val;
                 }
 
-                // 2. Lenient Difficulty (Map variations to easy, medium, hard)
-                if (normalizedRow.difficulty) {
-                    const val = String(normalizedRow.difficulty).trim().toLowerCase();
-                    if (val.includes('easy')) normalizedRow.difficulty = 'easy';
-                    else if (val.includes('hard')) normalizedRow.difficulty = 'hard';
-                    else if (val.includes('med')) normalizedRow.difficulty = 'medium';
-                    else normalizedRow.difficulty = 'medium'; // Default to medium
-                } else {
-                    normalizedRow.difficulty = 'medium'; // Default
+                // 2. Lenient Difficulty
+                let difficulty = 'medium';
+                if (row.difficulty) {
+                    const val = String(row.difficulty).trim().toLowerCase();
+                    if (val.includes('easy')) difficulty = 'easy';
+                    else if (val.includes('hard')) difficulty = 'hard';
                 }
 
-                // 3. Force string conversion for all expected string fields to prevent Zod type errors
-                ['text', 'option_a', 'option_b', 'option_c', 'option_d', 'subject', 'unit', 'topic', 'tags'].forEach(key => {
-                    const val = normalizedRow[key];
-                    if (val !== undefined && val !== null) {
-                        const strVal = String(val).trim();
-                        normalizedRow[key] = strVal || null; // Convert empty strings to null
-                    }
-                });
-
-                const parsed = QuestionRowSchema.parse(normalizedRow);
+                // Ensure we have either text or image for the question and subject
+                if (!row.subject) throw new Error("Subject is required");
+                if (!row.text && !row.image_url) throw new Error("Question text or image is required");
 
                 const options = [
-                    { id: 1, text: parsed.option_a },
-                    { id: 2, text: parsed.option_b },
-                    { id: 3, text: parsed.option_c },
-                    { id: 4, text: parsed.option_d }
+                    { id: 1, text: row.option_a || null, image_url: row.option_a_image_url || null },
+                    { id: 2, text: row.option_b || null, image_url: row.option_b_image_url || null },
+                    { id: 3, text: row.option_c || null, image_url: row.option_c_image_url || null },
+                    { id: 4, text: row.option_d || null, image_url: row.option_d_image_url || null }
                 ];
+
                 const correctMap: Record<string, number> = { 'A': 1, 'B': 2, 'C': 3, 'D': 4 };
 
                 // Handle Subject
                 let subjectId;
-                const subjName = String(parsed.subject || '').trim();
-                if (!subjName) throw new Error("Subject is required");
+                const subjName = row.subject.trim();
 
                 const subjectResult = await pool.query(
                     'SELECT id FROM subjects WHERE name = $1',
@@ -150,58 +145,68 @@ export const uploadQuestions = async (req: AuthRequest, res: Response) => {
                     subjectId = newSubject.rows[0].id;
                 }
 
-                validatedQuestions.push({
+                const questionToSave = {
                     school_id: schoolId,
                     subject_id: subjectId,
                     subject_name: subjName,
-                    text: parsed.text,
+                    text: row.text,
+                    image_url: row.image_url,
                     options: JSON.stringify(options),
-                    correct_option_id: correctMap[parsed.correct_option],
-                    difficulty: parsed.difficulty,
-                    unit: parsed.unit && parsed.unit.trim() !== '' ? parsed.unit.trim() : null,
-                    topic: parsed.topic || null,
-                    tags: parsed.tags ? parsed.tags.toString().split(',').map(t => t.trim()) : []
+                    correct_option_id: correctMap[correct_option] || 1,
+                    difficulty: difficulty,
+                    unit: row.unit || null,
+                    topic: row.topic || null,
+                    tags: row.tags ? row.tags.split(',').map(t => t.trim()) : []
+                };
+
+                console.log(`[CONTROLLER] Mapping question ${index + 1}:`, {
+                    text: questionToSave.text,
+                    image_url: questionToSave.image_url,
+                    has_options_images: options.some(o => !!o.image_url)
                 });
 
-            } catch (err: any) {
-                console.error(`\n[VALIDATION FAIL] Row ${index + 2}:`);
-                console.error(`  Raw keys:`, Object.keys(row).join(', '));
-                console.error(`  Parsed data:`, JSON.stringify(normalizedRow, null, 2));
+                validatedQuestions.push(questionToSave);
 
-                let message = 'Validation failed';
-                if (err instanceof z.ZodError) {
-                    message = err.issues.map((e: z.ZodIssue) => `${e.path.join('.')}: ${e.message}`).join(', ');
-                } else {
-                    message = err.message || message;
-                }
-                console.error(`  Error message:`, message);
-                errors.push({ row: index + 2, error: message });
+            } catch (err: any) {
+                log(`[CONTROLLER] VALIDATION FAIL Row ${index + 1}: ${err.message}`);
+                console.error(`\n[VALIDATION FAIL] Row ${index + 1}:`);
+                console.error(`  Error message:`, err.message);
+                errors.push({ row: index + 1, error: err.message });
             }
         }
 
+        const insertedIds: string[] = [];
         if (validatedQuestions.length > 0) {
+            log(`[CONTROLLER] Inserting questions into database...`);
             for (const q of validatedQuestions) {
-                await pool.query(
+                const insertedQ = await pool.query(
                     `INSERT INTO questions 
-                    (school_id, subject_id, text, options, correct_option_id, difficulty, unit, topic, tags)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                    [q.school_id, q.subject_id, q.text, q.options, q.correct_option_id, q.difficulty, q.unit, q.topic, q.tags]
+                    (school_id, subject_id, text, image_url, options, correct_option_id, difficulty, unit, topic, tags)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    RETURNING id`,
+                    [q.school_id, q.subject_id, q.text, q.image_url, q.options, q.correct_option_id, q.difficulty, q.unit, q.topic, q.tags]
                 );
+                insertedIds.push(insertedQ.rows[0].id);
             }
+            log(`[CONTROLLER] Database insertion complete`);
         }
 
         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+
+        const uniqueUnits = Array.from(new Set(validatedQuestions.map(q => q.unit).filter(Boolean)));
 
         res.json({
             message: `Imported ${validatedQuestions.length} questions.`,
             subject_id: validatedQuestions[0]?.subject_id,
             subject_name: validatedQuestions[0]?.subject_name,
-            unit: validatedQuestions[0]?.unit,
+            units: uniqueUnits,
+            question_ids: insertedIds,
             errors: errors.length > 0 ? errors : undefined
         });
 
     } catch (error: any) {
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        log(`[CONTROLLER] FATAL ERROR: ${error.message}`);
+        if (file && fs.existsSync(file.path)) fs.unlinkSync(file.path);
         console.error("Import Error:", error);
         res.status(500).json({ error: 'Import failed', details: error.message });
     }

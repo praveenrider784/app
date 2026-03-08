@@ -4,14 +4,28 @@ import { AuthRequest } from '../middleware/auth';
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
+import { env } from '../utils/env';
 
+const shouldDebugLog = env.REQUEST_TRACE === 'true' || env.NODE_ENV === 'development';
 const debugLog = (msg: string) => {
+    if (!shouldDebugLog) return;
     const logPath = path.join(process.cwd(), 'exam_debug.log');
     const timestamp = new Date().toISOString();
-    fs.appendFileSync(logPath, `[${timestamp}] ${msg}\n`);
+    fs.promises.appendFile(logPath, `[${timestamp}] ${msg}\n`).catch(() => { });
 };
 
-// Start Exam
+const shuffleInPlace = <T>(arr: T[]) => {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+};
+
+/**
+ * Start or resume an exam attempt.
+ * Ensures strict filtering and question serving.
+ */
 export const startExam = async (req: AuthRequest, res: Response) => {
     const { examId } = req.params;
     const studentId = req.user?.userId;
@@ -25,245 +39,220 @@ export const startExam = async (req: AuthRequest, res: Response) => {
             return res.status(403).json({ error: "Your account is not associated with any school. Please contact support." });
         }
 
-        // 1. Check if attempt exists
-        const existingAttemptResult = await pool.query(
-            'SELECT * FROM student_attempts WHERE exam_id = $1 AND student_id = $2 LIMIT 1',
-            [examId, studentId]
-        );
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        const existingAttempt = existingAttemptResult.rows[0];
+            // Advisory lock to prevent race conditions on attempt creation
+            // We use a hash of studentId and examId to create a unique lock key
+            const lockKeyStr = `${studentId}-${examId}`;
+            let hash = 0;
+            for (let i = 0; i < lockKeyStr.length; i++) {
+                hash = ((hash << 5) - hash) + lockKeyStr.charCodeAt(i);
+                hash |= 0; // Convert to 32bit integer
+            }
+            await client.query('SELECT pg_advisory_xact_lock($1)', [hash]);
 
-        if (existingAttempt) {
-            debugLog(`[RESUME] Found existing attempt: ${existingAttempt.id}`);
-
-            // Fetch exam duration for the timer
-            const examInfo = await pool.query('SELECT duration_minutes FROM exams WHERE id = $1', [examId]);
-            const duration = examInfo.rows[0]?.duration_minutes || 60;
-
-            const responsesResult = await pool.query(
-                `SELECT q.id, q.text, q.options, q.image_url, q.subject_id, r.selected_option_id 
-                 FROM responses r 
-                 JOIN questions q ON r.question_id = q.id 
-                 WHERE r.attempt_id = $1`,
-                [existingAttempt.id]
+            // Check for existing attempt
+            const existingAttemptResult = await client.query(
+                `SELECT * FROM student_attempts 
+                 WHERE exam_id = $1 AND student_id = $2 
+                 ORDER BY (status = 'completed') DESC, start_time DESC 
+                 LIMIT 1`,
+                [examId, studentId]
             );
 
-            debugLog(`[RESUME] Loaded ${responsesResult.rows.length} existing responses`);
+            const existingAttempt = existingAttemptResult.rows[0];
 
-            return res.json({
-                attempt: existingAttempt,
-                duration_minutes: duration,
-                questions: responsesResult.rows.map((r: any) => ({
-                    ...r,
-                    options: typeof r.options === 'string' ? JSON.parse(r.options) : r.options
-                })),
-                existingAnswers: responsesResult.rows.reduce((acc: any, curr: any) => {
-                    if (curr.selected_option_id) {
-                        acc[curr.id] = curr.selected_option_id;
-                    }
-                    return acc;
-                }, {})
-            });
-        }
+            if (existingAttempt) {
+                debugLog(`[RESUME] Found existing attempt: ${existingAttempt.id} status=${existingAttempt.status}`);
 
-        // 2. Fetch Exam Config
-        const examResult = await pool.query(
-            'SELECT * FROM exams WHERE id = $1 AND school_id = $2',
-            [examId, schoolId]
-        );
-        const exam = examResult.rows[0];
+                const examInfo = await client.query(
+                    'SELECT duration_minutes, start_time, end_time FROM exams WHERE id = $1',
+                    [examId]
+                );
+                const duration = examInfo.rows[0]?.duration_minutes || 60;
+                const examStartTime = examInfo.rows[0]?.start_time || null;
+                const examEndTime = examInfo.rows[0]?.end_time || null;
 
-        if (!exam) {
-            debugLog(`[ERROR] Exam ${examId} not found for school ${schoolId}`);
-            return res.status(404).json({ error: 'Exam not found' });
-        }
+                const responsesResult = await client.query(
+                    `SELECT q.id, q.text, q.options, q.image_url, q.subject_id, r.selected_option_id 
+                     FROM responses r 
+                     JOIN questions q ON r.question_id = q.id 
+                     WHERE r.attempt_id = $1
+                     ORDER BY r.id ASC`,
+                    [existingAttempt.id]
+                );
 
-        const duration = exam.duration_minutes || 60;
-        if (!exam.is_active) return res.status(403).json({ error: 'Exam is not active' });
+                await client.query('COMMIT');
 
-        // Strict Timing Check
-        const now = new Date();
-        if (exam.start_time && new Date(exam.start_time) > now) {
-            return res.status(403).json({ error: `This exam has not started yet. It is scheduled for ${new Date(exam.start_time).toLocaleString()}.` });
-        }
-        if (exam.end_time && new Date(exam.end_time) < now) {
-            return res.status(403).json({ error: 'This exam has already ended and is no longer available for new attempts.' });
-        }
-
-        // 3. Generate Question Set based on Config
-        const config = typeof exam.config === 'string' ? JSON.parse(exam.config) : exam.config;
-        let selectedQuestionIds: string[] = [];
-
-        if (!config || !config.sections) {
-            throw new Error("Invalid exam configuration: sections missing");
-        }
-
-        for (const section of config.sections) {
-            let queryStr = 'SELECT id FROM questions WHERE school_id = $1';
-            let params: any[] = [schoolId];
-            let pCount = 2;
-
-            if (section.filter.subject_id) {
-                queryStr += ` AND subject_id = $${pCount++}`;
-                params.push(section.filter.subject_id.toString());
-            }
-            if (section.filter.unit && section.filter.unit !== '') {
-                queryStr += ` AND unit = $${pCount++}`;
-                params.push(section.filter.unit.toString());
-            }
-            if (section.filter.topic && section.filter.topic !== '') {
-                queryStr += ` AND topic = $${pCount++}`;
-                params.push(section.filter.topic.toString());
-            }
-            if (section.filter.difficulty && section.filter.difficulty !== 'any') {
-                queryStr += ` AND difficulty = $${pCount++}`;
-                params.push(section.filter.difficulty);
-            }
-            if (section.filter.tags && section.filter.tags.length > 0) {
-                queryStr += ` AND tags @> $${pCount++}::text[]`;
-                params.push(section.filter.tags);
+                return res.json({
+                    attempt: existingAttempt,
+                    duration_minutes: duration,
+                    start_time: examStartTime,
+                    end_time: examEndTime,
+                    questions: responsesResult.rows.map((r: any) => ({
+                        ...r,
+                        options: typeof r.options === 'string' ? JSON.parse(r.options) : r.options
+                    })),
+                    existingAnswers: responsesResult.rows.reduce((acc: any, curr: any) => {
+                        if (curr.selected_option_id) acc[curr.id] = curr.selected_option_id;
+                        return acc;
+                    }, {})
+                });
             }
 
-            queryStr += ` ORDER BY RANDOM() LIMIT $${pCount++}`;
-            params.push(parseInt(section.count.toString()) || 10);
+            // Create New Attempt
+            const examResult = await client.query(
+                'SELECT * FROM exams WHERE id = $1 AND school_id = $2',
+                [examId, schoolId]
+            );
+            const exam = examResult.rows[0];
 
-            debugLog(`[QUERY] ${queryStr} | PARAMS: ${JSON.stringify(params)}`);
+            if (!exam) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Exam not found' });
+            }
 
-            const candidates = await pool.query(queryStr, params);
-            debugLog(`[RESULT] Found ${candidates.rows.length} questions`);
+            if (!exam.is_active) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'Exam is not active' });
+            }
 
-            // Ensure we don't add duplicate IDs from overlapping sections
-            candidates.rows.forEach(q => {
-                if (!selectedQuestionIds.includes(q.id)) {
-                    selectedQuestionIds.push(q.id);
+            const now = new Date();
+            if (exam.start_time && new Date(exam.start_time) > now) {
+                await client.query('ROLLBACK');
+                const startStr = new Date(exam.start_time).toLocaleString();
+                return res.status(403).json({ error: `Not started. Scheduled for ${startStr}` });
+            }
+            if (exam.end_time && new Date(exam.end_time) < now) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'Exam has ended and is no longer available.' });
+            }
+
+            // Question Selection Logic
+            const config = typeof exam.config === 'string' ? JSON.parse(exam.config) : exam.config;
+            let selectedQuestionIds: string[] = [];
+
+            if (config.specific_question_ids && Array.isArray(config.specific_question_ids) && config.specific_question_ids.length > 0) {
+                const requestedIds = Array.from(new Set(config.specific_question_ids));
+                const subsetCount = Number(config.random_subset_count);
+                const shouldRandomSubset = Number.isFinite(subsetCount) && subsetCount > 0 && subsetCount < requestedIds.length;
+
+                if (shouldRandomSubset) {
+                    const qFetch = await client.query(
+                        `SELECT id
+                         FROM questions
+                         WHERE school_id = $1 AND id = ANY($2::uuid[])
+                         ORDER BY RANDOM()
+                         LIMIT $3`,
+                        [schoolId, requestedIds, subsetCount]
+                    );
+                    selectedQuestionIds = qFetch.rows.map((q: any) => q.id);
+                } else {
+                    const qFetch = await client.query(
+                        'SELECT id FROM questions WHERE school_id = $1 AND id = ANY($2::uuid[])',
+                        [schoolId, requestedIds]
+                    );
+                    selectedQuestionIds = qFetch.rows.map((q: any) => q.id);
+                    shuffleInPlace(selectedQuestionIds);
                 }
+            } else if (config.sections) {
+                for (const section of config.sections) {
+                    let queryStr = 'SELECT id FROM questions WHERE school_id = $1';
+                    let params: any[] = [schoolId];
+                    let pCount = 2;
+
+                    if (section.filter.subject_id) { queryStr += ` AND subject_id = $${pCount++}`; params.push(section.filter.subject_id); }
+                    if (section.filter.unit && section.filter.unit !== '') { queryStr += ` AND unit = $${pCount++}`; params.push(section.filter.unit); }
+                    if (section.filter.difficulty && section.filter.difficulty !== 'any') { queryStr += ` AND difficulty = $${pCount++}`; params.push(section.filter.difficulty); }
+
+                    queryStr += ` ORDER BY RANDOM() LIMIT $${pCount}`;
+                    params.push(parseInt(section.count) || 10);
+
+                    const candidates = await client.query(queryStr, params);
+                    candidates.rows.forEach(q => {
+                        if (!selectedQuestionIds.includes(q.id)) selectedQuestionIds.push(q.id);
+                    });
+                }
+            }
+
+            if (selectedQuestionIds.length === 0) {
+                throw new Error("No questions found matching criteria.");
+            }
+
+            const newAttemptResult = await client.query(
+                `INSERT INTO student_attempts (exam_id, student_id, total_questions, status)
+                 VALUES ($1, $2, $3, $4) RETURNING *`,
+                [examId, studentId, selectedQuestionIds.length, 'in_progress']
+            );
+            const newAttempt = newAttemptResult.rows[0];
+
+            await client.query(
+                `INSERT INTO responses (attempt_id, question_id)
+                 SELECT $1::uuid, qid
+                 FROM UNNEST($2::uuid[]) AS qid`,
+                [newAttempt.id, selectedQuestionIds]
+            );
+
+            await client.query('COMMIT');
+
+            const questionsResult = await pool.query(
+                `SELECT q.id, q.text, q.options, q.image_url, q.subject_id
+                 FROM responses r
+                 JOIN questions q ON r.question_id = q.id
+                 WHERE r.attempt_id = $1
+                 ORDER BY r.id ASC`,
+                [newAttempt.id]
+            );
+
+            res.json({
+                attempt: newAttempt,
+                duration_minutes: exam.duration_minutes || 60,
+                start_time: exam.start_time || null,
+                end_time: exam.end_time || null,
+                questions: questionsResult.rows.map(q => ({
+                    ...q,
+                    options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
+                }))
             });
+
+        } catch (e: any) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
         }
-
-        debugLog(`[TOTAL] Gathered ${selectedQuestionIds.length} unique questions`);
-
-        if (selectedQuestionIds.length === 0) {
-            throw new Error("No questions found matching the exam criteria. Please contact your teacher.");
-        }
-
-        // 4. Create Attempt
-        const newAttemptResult = await pool.query(
-            `INSERT INTO student_attempts (exam_id, student_id, total_questions, status)
-             VALUES ($1, $2, $3, $4) RETURNING *`,
-            [examId, studentId, selectedQuestionIds.length, 'in_progress']
-        );
-        const newAttempt = newAttemptResult.rows[0];
-
-        // 5. Seed Responses (Empty)
-        for (const qId of selectedQuestionIds) {
-            await pool.query(
-                'INSERT INTO responses (attempt_id, question_id, selected_option_id) VALUES ($1, $2, $3)',
-                [newAttempt.id, qId, null]
-            );
-        }
-
-        // 6. Return Questions
-        const questionsResult = await pool.query(
-            'SELECT id, text, options, image_url, subject_id FROM questions WHERE id = ANY($1)',
-            [selectedQuestionIds]
-        );
-
-        res.json({
-            attempt: newAttempt,
-            duration_minutes: duration,
-            end_time: exam.end_time,
-            questions: questionsResult.rows.map(q => ({
-                ...q,
-                options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
-            }))
-        });
-
     } catch (error: any) {
-        debugLog(`[ERROR] Start Exam Failed: ${error.message}`);
-        console.error('Start Exam Error:', error);
+        debugLog(`[ERROR] startExam: ${error.message}`);
         res.status(500).json({ error: error.message });
     }
 };
 
-// Sync Answers
-export const syncAnswers = async (req: AuthRequest, res: Response) => {
-    const { attemptId } = req.params;
-    const { answers } = req.body;
-
-    try {
-        for (const answer of answers) {
-            await pool.query(
-                'UPDATE responses SET selected_option_id = $1 WHERE attempt_id = $2 AND question_id = $3',
-                [answer.selected_option_id, attemptId, answer.question_id]
-            );
-        }
-        res.json({ status: 'synced' });
-    } catch (error: any) {
-        console.error('Sync Answers Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-};
-
-// Submit Exam
-export const submitExam = async (req: AuthRequest, res: Response) => {
-    const { attemptId } = req.params;
-
-    try {
-        // 1. Mark attempt completed
-        await pool.query(
-            'UPDATE student_attempts SET status = $1, end_time = $2 WHERE id = $3',
-            ['completed', new Date().toISOString(), attemptId]
-        );
-
-        // 2. Grader Logic
-        const responsesResult = await pool.query(
-            `SELECT r.id, r.selected_option_id, q.correct_option_id 
-             FROM responses r 
-             JOIN questions q ON r.question_id = q.id 
-             WHERE r.attempt_id = $1`,
-            [attemptId]
-        );
-
-        let score = 0;
-        for (const r of responsesResult.rows) {
-            const isCorrect = r.selected_option_id === r.correct_option_id;
-            if (isCorrect) score++;
-
-            await pool.query(
-                'UPDATE responses SET is_correct = $1 WHERE id = $2',
-                [isCorrect, r.id]
-            );
-        }
-
-        // 3. Update Score
-        await pool.query(
-            'UPDATE student_attempts SET score = $1 WHERE id = $2',
-            [score, attemptId]
-        );
-
-        res.json({ status: 'submitted', score });
-
-    } catch (error: any) {
-        console.error('Submit Exam Error:', error);
-        res.status(500).json({ error: error.message });
-    }
-};
-
-// Get Available Exams for Student
+/**
+ * Get available exams filtered by scope (active/history).
+ */
 export const getAvailableExams = async (req: AuthRequest, res: Response) => {
     const studentId = req.user?.userId;
     const schoolId = req.user?.schoolId;
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 10;
+    const limit = parseInt(req.query.limit as string) || 6; // Default to 6 for student dashboard
     const offset = (page - 1) * limit;
-    const scope = (req.query.scope as string) || 'all';
+    const scope = (req.query.scope as string) || 'active';
 
     try {
-        const expiredCondition = `(e.end_time IS NOT NULL AND e.end_time < NOW()) OR (e.end_time IS NULL AND e.start_time IS NOT NULL AND e.duration_minutes IS NOT NULL AND (e.start_time + (e.duration_minutes || ' minutes')::interval) < NOW())`;
+        debugLog(`GET_AVAILABLE_EXAMS: User=${studentId} Scope=${scope}`);
+
+        const expiredCondition = `(
+            (e.end_time IS NOT NULL AND e.end_time < NOW()) OR 
+            (e.end_time IS NULL AND e.start_time IS NOT NULL AND e.duration_minutes IS NOT NULL AND (e.start_time + (e.duration_minutes || ' minutes')::interval) < NOW())
+        )`;
+
         let scopeCondition = '';
         if (scope === 'active') {
             scopeCondition = `AND e.is_active = true AND NOT (${expiredCondition}) AND (sa.status IS NULL OR sa.status <> 'completed')`;
         } else if (scope === 'history') {
+            // History includes finished exams and closed exams, even if this student did not attempt.
             scopeCondition = `AND (sa.status = 'completed' OR (${expiredCondition}) OR e.is_active = false)`;
         }
 
@@ -273,7 +262,7 @@ export const getAvailableExams = async (req: AuthRequest, res: Response) => {
                 SELECT DISTINCT ON (exam_id) * 
                 FROM student_attempts 
                 WHERE student_id = $1 
-                ORDER BY exam_id, (status = 'completed') DESC, id DESC
+                ORDER BY exam_id, COALESCE(end_time, start_time) DESC, id DESC
             ) sa ON e.id = sa.exam_id
             WHERE e.school_id = $2
             ${scopeCondition}
@@ -281,42 +270,155 @@ export const getAvailableExams = async (req: AuthRequest, res: Response) => {
 
         const result = await pool.query(
             `SELECT e.*, sa.status as attempt_status, sa.score, sa.total_questions,
-                    CASE 
-                        WHEN e.end_time IS NOT NULL AND e.end_time < NOW() THEN true
-                        WHEN e.end_time IS NULL AND e.start_time IS NOT NULL AND e.duration_minutes IS NOT NULL
-                             AND (e.start_time + (e.duration_minutes || ' minutes')::interval) < NOW() THEN true
-                        ELSE false 
-                    END as is_expired,
+                    (${expiredCondition}) as is_expired,
                     CASE WHEN e.start_time IS NOT NULL AND e.start_time > NOW() THEN true ELSE false END as is_upcoming
              ${baseJoin}
-             ORDER BY e.created_at DESC, e.id DESC
+             ORDER BY COALESCE(sa.end_time, e.end_time, e.created_at) DESC, e.id DESC
              LIMIT $3 OFFSET $4`,
             [studentId, schoolId, limit, offset]
         );
 
-        const totalCountResult = await pool.query(
-            `SELECT COUNT(*) ${baseJoin}`,
-            [studentId, schoolId]
-        );
-        const totalCount = totalCountResult.rows.length > 0 ? parseInt(totalCountResult.rows[0].count) : 0;
+        const countRes = await pool.query(`SELECT COUNT(*) ${baseJoin}`, [studentId, schoolId]);
+        const total = parseInt(countRes.rows[0].count);
+
+        debugLog(`GET_AVAILABLE_EXAMS_RESULT: User=${studentId} Scope=${scope} count=${result.rows.length} total=${total}`);
 
         res.json({
             exams: result.rows,
-            pagination: {
-                total: totalCount,
-                page,
-                limit,
-                pages: Math.ceil(totalCount / limit)
-            },
-            meta: {
-                returned: result.rows.length,
-                offset,
-                server_now: new Date().toISOString(),
-                scope
-            }
+            pagination: { total, page, limit, pages: Math.ceil(total / limit) },
+            meta: { scope, server_now: new Date().toISOString() }
         });
     } catch (error: any) {
-        console.error('Get Available Exams Error:', error);
+        debugLog(`[ERROR] getAvailableExams: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * Submit exam responses and calculate score.
+ */
+export const submitExam = async (req: AuthRequest, res: Response) => {
+    const { attemptId } = req.params;
+    const studentId = req.user?.userId;
+
+    try {
+        debugLog(`SUBMIT EXAM: Attempt=${attemptId} Student=${studentId}`);
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const ownerCheck = await client.query(
+                'SELECT id FROM student_attempts WHERE id = $1 AND student_id = $2 FOR UPDATE',
+                [attemptId, studentId]
+            );
+            if (ownerCheck.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'You are not allowed to submit this attempt.' });
+            }
+
+            // 1. Mark attempt completed
+            await client.query(
+                'UPDATE student_attempts SET status = $1, end_time = NOW() WHERE id = $2 AND student_id = $3',
+                ['completed', attemptId, studentId]
+            );
+
+            // 2. Grade in one SQL pass and compute score
+            const scoreResult = await client.query(
+                `WITH graded AS (
+                    SELECT r.id, (r.selected_option_id = q.correct_option_id) AS is_correct
+                    FROM responses r
+                    JOIN questions q ON r.question_id = q.id
+                    JOIN student_attempts sa ON sa.id = r.attempt_id
+                    WHERE r.attempt_id = $1 AND sa.student_id = $2
+                 ),
+                 updated AS (
+                    UPDATE responses r
+                    SET is_correct = g.is_correct
+                    FROM graded g
+                    WHERE r.id = g.id
+                    RETURNING g.is_correct
+                 )
+                 SELECT COUNT(*) FILTER (WHERE is_correct) AS score FROM updated`,
+                [attemptId, studentId]
+            );
+
+            const score = Number(scoreResult.rows[0]?.score || 0);
+
+            // 3. Update Score
+            await client.query(
+                'UPDATE student_attempts SET score = $1 WHERE id = $2 AND student_id = $3',
+                [score, attemptId, studentId]
+            );
+
+            await client.query('COMMIT');
+
+            res.json({ status: 'submitted', score });
+        } catch (e) {
+            await client.query('ROLLBACK');
+            throw e;
+        } finally {
+            client.release();
+        }
+
+    } catch (error: any) {
+        debugLog(`[ERROR] submitExam: ${error.message}`);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * Sync answers.
+ */
+export const syncAnswers = async (req: AuthRequest, res: Response) => {
+    const { attemptId } = req.params;
+    const { answers } = req.body;
+    const studentId = req.user?.userId;
+
+    try {
+        if (!Array.isArray(answers)) {
+            return res.status(400).json({ error: "Answers must be an array" });
+        }
+
+        const ownerCheck = await pool.query(
+            'SELECT id FROM student_attempts WHERE id = $1 AND student_id = $2',
+            [attemptId, studentId]
+        );
+        if (ownerCheck.rowCount === 0) {
+            return res.status(403).json({ error: 'You are not allowed to sync this attempt.' });
+        }
+
+        const validAnswers = answers.filter((answer: any) =>
+            answer &&
+            typeof answer.question_id === 'string' &&
+            Number.isInteger(answer.selected_option_id)
+        );
+
+        if (validAnswers.length === 0) {
+            return res.json({ status: 'synced' });
+        }
+
+        const questionIds = validAnswers.map((a: any) => a.question_id);
+        const selectedOptionIds = validAnswers.map((a: any) => a.selected_option_id);
+
+        await pool.query(
+            `WITH payload AS (
+                SELECT
+                    UNNEST($1::uuid[]) AS question_id,
+                    UNNEST($2::int[]) AS selected_option_id
+             )
+             UPDATE responses r
+             SET selected_option_id = p.selected_option_id
+             FROM payload p, student_attempts sa
+             WHERE r.attempt_id = $3
+               AND r.question_id = p.question_id
+               AND sa.id = r.attempt_id
+               AND sa.student_id = $4`,
+            [questionIds, selectedOptionIds, attemptId, studentId]
+        );
+
+        res.json({ status: 'synced' });
+    } catch (error: any) {
+        debugLog(`[ERROR] syncAnswers: ${error.message}`);
         res.status(500).json({ error: error.message });
     }
 };
